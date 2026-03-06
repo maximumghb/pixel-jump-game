@@ -118,6 +118,103 @@ window.addEventListener('keyup',   e => { keys[e.code] = false; });
 
 function pressed(...codes) { return codes.some(c => keys[c]); }
 
+// ── AUDIO ─────────────────────────────────────────────────────────────────────
+let audioCtx = null;
+let musicNodes = [];
+let musicPlaying = false;
+let musicTimer = null;
+let musicNextTime = 0;
+
+function initAudio() {
+  if (audioCtx) { audioCtx.resume(); return; }
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+}
+
+function tone(freq, type, start, dur, vol) {
+  if (!audioCtx) return;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.connect(gain); gain.connect(audioCtx.destination);
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, start);
+  gain.gain.setValueAtTime(vol, start);
+  gain.gain.exponentialRampToValueAtTime(0.0001, start + dur * 0.9);
+  osc.start(start); osc.stop(start + dur);
+  return osc;
+}
+
+function sfx(freqs, durs, vol = 0.22) {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime;
+  let offset = 0;
+  freqs.forEach((f, i) => {
+    if (f > 0) tone(f, 'square', t + offset, durs[i] || 0.08, vol);
+    offset += durs[i] || 0.08;
+  });
+}
+
+const sfxJump     = () => sfx([380, 560],                   [0.07, 0.07]);
+const sfxCoin     = () => sfx([1046, 1318],                 [0.08, 0.10], 0.18);
+const sfxStomp    = () => sfx([220, 110],                   [0.06, 0.08], 0.28);
+const sfxDeath    = () => sfx([523,466,415,370,294,262],    [0.09,0.09,0.09,0.09,0.09,0.13], 0.2);
+const sfxLevelUp  = () => sfx([523,659,784,1047],           [0.10,0.10,0.10,0.18], 0.22);
+const sfxWin      = () => sfx([523,659,784,1047,1319,1568], [0.10,0.10,0.10,0.10,0.10,0.22], 0.22);
+const sfxGameOver = () => sfx([392,349,294,262,196],        [0.18,0.18,0.18,0.18,0.28], 0.22);
+
+// ── MUSIC ─────────────────────────────────────────────────────────────────────
+const BPM = 158, B = 60 / BPM;
+
+const MELODY = [
+  [659,0.5],[659,0.5],[0,0.5],[659,0.5],[0,0.5],[523,0.5],[659,0.5],[784,1],[0,0.5],[392,1],[0,1],
+  [523,1],[0,0.5],[392,0.75],[0,0.25],[330,1],[440,0.75],[0,0.25],[494,0.5],[466,0.5],[440,1],[0,0.5],
+  [392,0.67],[523,0.67],[659,0.67],[440,0.5],[523,0.5],[0,0.25],[494,0.5],[392,0.5],[330,1],[0,1],
+  [523,0.5],[587,0.5],[523,0.5],[0,0.5],[415,1],[440,1],[0,0.5],[349,0.5],[415,0.5],[440,0.5],[392,1.5],
+];
+const BASS = [
+  [131,1],[165,1],[196,1],[131,1],
+  [131,1],[165,1],[196,1],[131,1],
+  [131,1],[165,1],[196,1],[131,1],
+  [131,1],[165,1],[196,1],[131,1],
+];
+
+function scheduleBlock(seq, startT, type, vol) {
+  let t = startT;
+  for (const [freq, beats] of seq) {
+    const dur = beats * B;
+    if (freq > 0) {
+      const osc = tone(freq, type, t, dur, vol);
+      if (osc) musicNodes.push(osc);
+    }
+    t += dur;
+  }
+  return t;
+}
+
+function scheduleMusicLoop() {
+  if (!musicPlaying || !audioCtx) return;
+  const loopStart = musicNextTime;
+  const melodyEnd = scheduleBlock(MELODY, loopStart, 'square',   0.055);
+  const bassEnd   = scheduleBlock(BASS,   loopStart, 'triangle', 0.07);
+  musicNextTime = Math.max(melodyEnd, bassEnd);
+  const delay = (musicNextTime - audioCtx.currentTime - 0.6) * 1000;
+  musicTimer = setTimeout(scheduleMusicLoop, Math.max(delay, 50));
+}
+
+function startMusic() {
+  if (!audioCtx) return;
+  stopMusic();
+  musicPlaying = true;
+  musicNextTime = audioCtx.currentTime + 0.1;
+  scheduleMusicLoop();
+}
+
+function stopMusic() {
+  musicPlaying = false;
+  if (musicTimer) { clearTimeout(musicTimer); musicTimer = null; }
+  musicNodes.forEach(n => { try { n.stop(0); } catch(_) {} });
+  musicNodes = [];
+}
+
 // ── GAME STATE ───────────────────────────────────────────────────────────────
 let state = 'menu'; // menu | play | dead | win | gameover
 let score = 0, lives = 3, level = 1;
@@ -359,6 +456,7 @@ function update() {
       lives--;
       livesEl.textContent = lives;
       if (lives <= 0) {
+        sfxGameOver();
         showOverlay('GAME OVER', 'ЗНОВУ');
         state = 'gameover';
       } else {
@@ -384,6 +482,7 @@ function update() {
   if (jumpKey && !jumpPressed && p.onGround) {
     p.vy = JUMP_F;
     p.onGround = false;
+    sfxJump();
   }
   jumpPressed = jumpKey;
 
@@ -429,6 +528,7 @@ function update() {
       coin.collected = true;
       score++;
       scoreEl.textContent = score;
+      sfxCoin();
       spawnParticles(coin.x, coin.y, C.coin);
     }
   }
@@ -464,6 +564,7 @@ function update() {
         p.vy = -8;
         score += 2;
         scoreEl.textContent = score;
+        sfxStomp();
         spawnParticles(e.x+e.w/2, e.y+e.h/2, C.goomba);
       } else {
         killPlayer();
@@ -481,10 +582,15 @@ function update() {
   const flagRect = { x: flagX-8, y: 0, w: 16, h: H };
   if (rectOverlap(p, flagRect)) {
     if (level < 3) {
+      sfxLevelUp();
+      stopMusic();
       level++;
       levelEl.textContent = level;
       initLevel();
+      setTimeout(startMusic, 600);
     } else {
+      sfxWin();
+      stopMusic();
       showOverlay('ТИ ПЕРЕМІГ!', 'ЗНОВУ');
       state = 'win';
     }
@@ -496,6 +602,8 @@ function killPlayer() {
   player.dead = true;
   player.deadTimer = 80;
   player.vy = -12;
+  stopMusic();
+  sfxDeath();
 }
 
 // ── DRAW ─────────────────────────────────────────────────────────────────────
@@ -730,14 +838,10 @@ function showOverlay(title, btn) {
   overlay.style.display = 'flex';
 }
 
-overlayBtn.addEventListener('click', () => {
+function startGame() {
+  initAudio();
   overlay.style.display = 'none';
-  if (state === 'gameover') {
-    score = 0; lives = 3; level = 1;
-    scoreEl.textContent = 0;
-    livesEl.textContent = 3;
-    levelEl.textContent = 1;
-  } else if (state === 'win') {
+  if (state === 'gameover' || state === 'win') {
     score = 0; lives = 3; level = 1;
     scoreEl.textContent = 0;
     livesEl.textContent = 3;
@@ -745,6 +849,13 @@ overlayBtn.addEventListener('click', () => {
   }
   initLevel();
   state = 'play';
+  startMusic();
+}
+
+overlayBtn.addEventListener('click', startGame);
+
+window.addEventListener('keydown', e => {
+  if (e.code === 'Enter' && overlay.style.display !== 'none') startGame();
 });
 
 // ── LOOP ─────────────────────────────────────────────────────────────────────
