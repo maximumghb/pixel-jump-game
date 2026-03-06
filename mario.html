@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<title>Піксельна Гра</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #1a1a2e;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    font-family: monospace;
+    color: #fff;
+  }
+  #ui {
+    display: flex;
+    gap: 40px;
+    margin-bottom: 10px;
+    font-size: 18px;
+    font-weight: bold;
+    text-shadow: 2px 2px 0 #000;
+  }
+  canvas {
+    border: 3px solid #e94560;
+    image-rendering: pixelated;
+    display: block;
+  }
+  #msg {
+    margin-top: 12px;
+    font-size: 14px;
+    color: #aaa;
+  }
+  #overlay {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0,0,0,0.75);
+    font-size: 32px;
+    font-weight: bold;
+    letter-spacing: 2px;
+    gap: 16px;
+  }
+  #overlay button {
+    font-size: 18px;
+    padding: 10px 30px;
+    border: 3px solid #e94560;
+    background: #1a1a2e;
+    color: #fff;
+    cursor: pointer;
+    font-family: monospace;
+    letter-spacing: 1px;
+  }
+  #overlay button:hover { background: #e94560; }
+  #wrapper { position: relative; }
+</style>
+</head>
+<body>
+
+<div id="ui">
+  <span>МОНЕТИ: <span id="scoreEl">0</span></span>
+  <span>ЖИТТЯ: <span id="livesEl">3</span></span>
+  <span>РІВЕНЬ: <span id="levelEl">1</span></span>
+</div>
+
+<div id="wrapper">
+  <canvas id="c" width="800" height="480"></canvas>
+  <div id="overlay">
+    <div id="overlayTitle">PIXEL JUMP</div>
+    <button id="overlayBtn">СТАРТ</button>
+  </div>
+</div>
+
+<div id="msg">Стрілки / WASD — рух &nbsp;|&nbsp; Пробіл / W / ↑ — стрибок</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+const scoreEl = document.getElementById('scoreEl');
+const livesEl = document.getElementById('livesEl');
+const levelEl = document.getElementById('levelEl');
+const overlay = document.getElementById('overlay');
+const overlayTitle = document.getElementById('overlayTitle');
+const overlayBtn = document.getElementById('overlayBtn');
+
+// ── PALETTE ─────────────────────────────────────────────────────────────────
+const C = {
+  sky:    '#5c94fc',
+  cloud:  '#fff',
+  ground: '#8b4513',
+  grass:  '#3cb371',
+  brick:  '#c84b00',
+  brickH: '#ff6a00',
+  coin:   '#ffd700',
+  coinG:  '#ffa500',
+  player: '#e83030',
+  playerH:'#ffc0cb',
+  playerO:'#3a1a00',
+  goomba: '#8b5e00',
+  goombaE:'#200',
+  spike:  '#888',
+  flagP:  '#aaa',
+  flagF:  '#e94560',
+  star:   '#ffe066',
+};
+
+// ── INPUT ────────────────────────────────────────────────────────────────────
+const keys = {};
+window.addEventListener('keydown', e => { keys[e.code] = true; e.preventDefault(); });
+window.addEventListener('keyup',   e => { keys[e.code] = false; });
+
+function pressed(...codes) { return codes.some(c => keys[c]); }
+
+// ── GAME STATE ───────────────────────────────────────────────────────────────
+let state = 'menu'; // menu | play | dead | win | gameover
+let score = 0, lives = 3, level = 1;
+let camera = 0;
+
+// ── LEVEL DATA GENERATOR ─────────────────────────────────────────────────────
+const TILE = 32;
+
+function makePlatforms(lvl) {
+  // ground segments + floating platforms
+  const plats = [];
+  const groundY = H - TILE;
+
+  // Ground: broken segments for challenge
+  const gaps = lvl === 1 ? [[400,450],[700,760]] :
+               lvl === 2 ? [[300,370],[600,680],[900,980],[1200,1270]] :
+                           [[250,340],[550,640],[750,840],[1050,1150],[1350,1450]];
+
+  // Full ground start
+  for (let x = 0; x < 200; x += TILE)
+    plats.push({ x, y: groundY, w: TILE, h: TILE, type:'ground' });
+
+  // Ground with gaps
+  let gx = 200;
+  const levelW = 200 + 1600 + lvl * 400;
+  while (gx < levelW) {
+    const gap = gaps.find(g => g[0] <= gx && gx < g[1]);
+    if (!gap) {
+      plats.push({ x: gx, y: groundY, w: TILE, h: TILE, type:'ground' });
+    }
+    gx += TILE;
+  }
+
+  // Floating platforms (hand-crafted per level feel)
+  const floats = lvl === 1 ? [
+    [200, groundY-96,  128],
+    [480, groundY-160, 96],
+    [640, groundY-96,  96],
+    [800, groundY-192, 128],
+    [1000,groundY-128, 96],
+    [1100,groundY-224, 128],
+    [1300,groundY-128, 96],
+  ] : lvl === 2 ? [
+    [200, groundY-128, 96],
+    [380, groundY-200, 128],
+    [600, groundY-96,  96],
+    [750, groundY-192, 128],
+    [950, groundY-128, 96],
+    [1100,groundY-256, 96],
+    [1300,groundY-160, 128],
+    [1500,groundY-96,  96],
+    [1650,groundY-224, 128],
+  ] : [
+    [200, groundY-160, 96],
+    [370, groundY-256, 96],
+    [540, groundY-160, 96],
+    [700, groundY-288, 128],
+    [880, groundY-192, 96],
+    [1050,groundY-320, 96],
+    [1200,groundY-224, 128],
+    [1380,groundY-288, 96],
+    [1550,groundY-160, 128],
+    [1750,groundY-320, 96],
+  ];
+
+  for (const [x,y,w] of floats)
+    plats.push({ x, y, w, h: TILE, type:'brick' });
+
+  return plats;
+}
+
+function makeCoins(platforms, lvl) {
+  const coins = [];
+  for (const p of platforms) {
+    if (p.type === 'brick') {
+      const count = 1 + Math.floor(p.w / TILE);
+      for (let i = 0; i < count; i++)
+        coins.push({ x: p.x + i * TILE + 8, y: p.y - 28, r: 10, collected: false });
+    } else if (p.type === 'ground') {
+      if (Math.random() < 0.15)
+        coins.push({ x: p.x + 8, y: p.y - 28, r: 10, collected: false });
+    }
+  }
+  return coins;
+}
+
+function makeEnemies(lvl) {
+  const groundY = H - TILE;
+  const base = [
+    { x: 500,  y: groundY - 32, type:'goomba' },
+    { x: 850,  y: groundY - 32, type:'goomba' },
+    { x: 1050, y: groundY - 32, type:'goomba' },
+    { x: 1200, y: groundY - 32, type:'goomba' },
+  ];
+  if (lvl >= 2) base.push(
+    { x: 400,  y: groundY - 32, type:'goomba' },
+    { x: 750,  y: groundY - 32, type:'goomba' },
+    { x: 1400, y: groundY - 32, type:'goomba' },
+    { x: 1600, y: groundY - 32, type:'goomba' },
+  );
+  if (lvl >= 3) base.push(
+    { x: 300,  y: groundY - 32, type:'goomba' },
+    { x: 600,  y: groundY - 32, type:'goomba' },
+    { x: 900,  y: groundY - 32, type:'goomba' },
+    { x: 1100, y: groundY - 32, type:'goomba' },
+    { x: 1550, y: groundY - 32, type:'goomba' },
+    { x: 1750, y: groundY - 32, type:'goomba' },
+  );
+  return base.map(e => ({
+    ...e,
+    vx: -(0.8 + lvl * 0.3),
+    vy: 0, w: 28, h: 28,
+    alive: true, squished: false, squishTimer: 0
+  }));
+}
+
+// ── WORLD ────────────────────────────────────────────────────────────────────
+let platforms, coins, enemies, flagX, levelW;
+let player;
+
+function initLevel() {
+  platforms = makePlatforms(level);
+  coins = makeCoins(platforms, level);
+  enemies = makeEnemies(level);
+  levelW = Math.max(...platforms.map(p => p.x + p.w)) + 200;
+  flagX = levelW - 100;
+  camera = 0;
+
+  const groundY = H - TILE;
+  player = {
+    x: 60, y: groundY - 48,
+    vx: 0, vy: 0,
+    w: 28, h: 40,
+    onGround: false,
+    dir: 1,
+    invincible: 0,
+    animFrame: 0,
+    animTimer: 0,
+    dead: false,
+    deadTimer: 0,
+  };
+}
+
+// ── PHYSICS ──────────────────────────────────────────────────────────────────
+const GRAVITY = 0.55;
+const JUMP_F  = -13;
+const SPEED   = 3.8;
+
+function rectOverlap(a, b) {
+  return a.x < b.x+b.w && a.x+a.w > b.x &&
+         a.y < b.y+b.h && a.y+a.h > b.y;
+}
+
+function resolvePlayer(p) {
+  p.onGround = false;
+  for (const plat of platforms) {
+    if (!rectOverlap(p, plat)) continue;
+    const ox = Math.min(p.x+p.w, plat.x+plat.w) - Math.max(p.x, plat.x);
+    const oy = Math.min(p.y+p.h, plat.y+plat.h) - Math.max(p.y, plat.y);
+    if (ox < oy) {
+      p.x += (p.x < plat.x ? -ox : ox);
+      p.vx = 0;
+    } else {
+      if (p.vy > 0 && p.y+p.h-p.vy <= plat.y+2) {
+        p.y = plat.y - p.h;
+        p.vy = 0;
+        p.onGround = true;
+      } else if (p.vy < 0) {
+        p.y = plat.y + plat.h;
+        p.vy = 0;
+      }
+    }
+  }
+}
+
+function resolveEnemy(e) {
+  e.onGround = false;
+  for (const plat of platforms) {
+    if (!rectOverlap(e, plat)) continue;
+    const ox = Math.min(e.x+e.w, plat.x+plat.w) - Math.max(e.x, plat.x);
+    const oy = Math.min(e.y+e.h, plat.y+plat.h) - Math.max(e.y, plat.y);
+    if (ox < oy) {
+      e.vx *= -1;
+      e.x += (e.x < plat.x ? -ox : ox);
+    } else {
+      if (e.vy > 0) {
+        e.y = plat.y - e.h;
+        e.vy = 0;
+        e.onGround = true;
+      } else {
+        e.y = plat.y + plat.h;
+        e.vy = 0;
+      }
+    }
+  }
+}
+
+// ── STARS (BG decoration) ────────────────────────────────────────────────────
+const bgStars = Array.from({length:40}, () => ({
+  x: Math.random()*800, y: Math.random()*H*0.6, s: Math.random()*2+1
+}));
+
+// ── PARTICLES ────────────────────────────────────────────────────────────────
+let particles = [];
+function spawnParticles(x, y, color, n=8) {
+  for (let i=0; i<n; i++) {
+    const angle = (i/n)*Math.PI*2;
+    particles.push({
+      x, y,
+      vx: Math.cos(angle)*3,
+      vy: Math.sin(angle)*3 - 2,
+      color,
+      life: 30,
+    });
+  }
+}
+
+// ── CLOUDS ───────────────────────────────────────────────────────────────────
+const clouds = Array.from({length:8}, (_,i) => ({
+  x: i*250 + 100,
+  y: 40 + Math.random()*80,
+  w: 80+Math.floor(Math.random()*60),
+}));
+
+// ── UPDATE ───────────────────────────────────────────────────────────────────
+let jumpPressed = false;
+
+function update() {
+  if (state !== 'play') return;
+
+  const p = player;
+
+  // Dead animation
+  if (p.dead) {
+    p.deadTimer--;
+    p.vy += GRAVITY;
+    p.y += p.vy;
+    if (p.deadTimer <= 0) {
+      lives--;
+      livesEl.textContent = lives;
+      if (lives <= 0) {
+        showOverlay('GAME OVER', 'ЗНОВУ');
+        state = 'gameover';
+      } else {
+        initLevel();
+        state = 'play';
+      }
+    }
+    return;
+  }
+
+  // Horizontal
+  let moving = false;
+  if (pressed('ArrowLeft','KeyA')) {
+    p.vx = -SPEED; p.dir = -1; moving = true;
+  } else if (pressed('ArrowRight','KeyD')) {
+    p.vx = SPEED; p.dir = 1; moving = true;
+  } else {
+    p.vx *= 0.8;
+  }
+
+  // Jump
+  const jumpKey = pressed('ArrowUp','KeyW','Space');
+  if (jumpKey && !jumpPressed && p.onGround) {
+    p.vy = JUMP_F;
+    p.onGround = false;
+  }
+  jumpPressed = jumpKey;
+
+  // Variable jump height
+  if (!jumpKey && p.vy < -4) p.vy = -4;
+
+  p.vy += GRAVITY;
+  if (p.vy > 18) p.vy = 18;
+
+  p.x += p.vx;
+  p.y += p.vy;
+
+  // Boundary
+  if (p.x < 0) { p.x = 0; p.vx = 0; }
+  if (p.x + p.w > levelW) p.x = levelW - p.w;
+
+  resolvePlayer(p);
+
+  // Fall into pit
+  if (p.y > H + 50) killPlayer();
+
+  // Invincibility
+  if (p.invincible > 0) p.invincible--;
+
+  // Anim
+  if (moving && p.onGround) {
+    p.animTimer++;
+    if (p.animTimer > 8) { p.animTimer = 0; p.animFrame = (p.animFrame+1)%4; }
+  } else if (!p.onGround) {
+    p.animFrame = 2;
+  } else {
+    p.animFrame = 0;
+  }
+
+  // Camera
+  camera = Math.max(0, Math.min(p.x - W/3, levelW - W));
+
+  // Coins
+  for (const coin of coins) {
+    if (coin.collected) continue;
+    const cr = { x: coin.x - coin.r, y: coin.y - coin.r, w: coin.r*2, h: coin.r*2 };
+    if (rectOverlap(p, cr)) {
+      coin.collected = true;
+      score++;
+      scoreEl.textContent = score;
+      spawnParticles(coin.x, coin.y, C.coin);
+    }
+  }
+
+  // Enemies
+  for (const e of enemies) {
+    if (!e.alive) continue;
+    if (e.squished) {
+      e.squishTimer--;
+      if (e.squishTimer <= 0) e.alive = false;
+      continue;
+    }
+
+    e.vy += GRAVITY;
+    e.x += e.vx;
+    e.y += e.vy;
+    resolveEnemy(e);
+
+    // Reverse at edge
+    const atEdge = !platforms.some(pl =>
+      pl.y === H-TILE &&
+      pl.x <= e.x + e.w/2 + e.vx*4 && pl.x+pl.w >= e.x + e.w/2 + e.vx*4
+    );
+    if (atEdge && e.onGround) e.vx *= -1;
+    if (e.y > H + 50) { e.alive = false; continue; }
+
+    // Player collision
+    if (p.invincible === 0 && rectOverlap(p, e)) {
+      // Stomp from above
+      if (p.vy > 0 && p.y + p.h - p.vy <= e.y + 6) {
+        e.squished = true;
+        e.squishTimer = 20;
+        p.vy = -8;
+        score += 2;
+        scoreEl.textContent = score;
+        spawnParticles(e.x+e.w/2, e.y+e.h/2, C.goomba);
+      } else {
+        killPlayer();
+      }
+    }
+  }
+
+  // Particles
+  for (const pt of particles) {
+    pt.x += pt.vx; pt.y += pt.vy; pt.vy += 0.2; pt.life--;
+  }
+  particles = particles.filter(pt => pt.life > 0);
+
+  // Flag / level end
+  const flagRect = { x: flagX-8, y: 0, w: 16, h: H };
+  if (rectOverlap(p, flagRect)) {
+    if (level < 3) {
+      level++;
+      levelEl.textContent = level;
+      initLevel();
+    } else {
+      showOverlay('ТИ ПЕРЕМІГ!', 'ЗНОВУ');
+      state = 'win';
+    }
+  }
+}
+
+function killPlayer() {
+  if (player.invincible > 0) return;
+  player.dead = true;
+  player.deadTimer = 80;
+  player.vy = -12;
+}
+
+// ── DRAW ─────────────────────────────────────────────────────────────────────
+function drawCloud(x, y, w) {
+  ctx.fillStyle = C.cloud;
+  const h = 22;
+  ctx.fillRect(x, y+h/2, w, h/2);
+  ctx.beginPath();
+  ctx.arc(x+w*0.25, y+h/2, h/2, Math.PI, 0);
+  ctx.arc(x+w*0.6,  y+h/4, h*0.7, Math.PI, 0);
+  ctx.arc(x+w*0.85, y+h/2, h*0.45, Math.PI, 0);
+  ctx.fill();
+}
+
+function drawGround(p) {
+  // Grass top
+  ctx.fillStyle = C.grass;
+  ctx.fillRect(p.x - camera, p.y, p.w, 8);
+  // Dirt
+  ctx.fillStyle = C.ground;
+  ctx.fillRect(p.x - camera, p.y+8, p.w, p.h-8);
+  // Grid lines
+  ctx.strokeStyle = 'rgba(0,0,0,0.2)';
+  ctx.strokeRect(p.x - camera + 0.5, p.y + 0.5, p.w-1, p.h-1);
+}
+
+function drawBrick(p) {
+  ctx.fillStyle = C.brick;
+  ctx.fillRect(p.x - camera, p.y, p.w, p.h);
+  ctx.fillStyle = C.brickH;
+  ctx.fillRect(p.x - camera + 2, p.y + 2, p.w-4, 6);
+  ctx.fillRect(p.x - camera + 2, p.y + 14, p.w/2-3, 6);
+  ctx.fillRect(p.x - camera + p.w/2+1, p.y + 14, p.w/2-3, 6);
+  ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+  ctx.strokeRect(p.x - camera + 0.5, p.y + 0.5, p.w-1, p.h-1);
+}
+
+function drawCoin(coin) {
+  if (coin.collected) return;
+  const x = coin.x - camera, y = coin.y;
+  const t = Date.now() / 400;
+  const scaleX = Math.abs(Math.cos(t + coin.x));
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(scaleX, 1);
+  ctx.beginPath();
+  ctx.arc(0, 0, coin.r, 0, Math.PI*2);
+  const grad = ctx.createRadialGradient(-3, -3, 1, 0, 0, coin.r);
+  grad.addColorStop(0, '#fff9c4');
+  grad.addColorStop(0.5, C.coin);
+  grad.addColorStop(1, C.coinG);
+  ctx.fillStyle = grad;
+  ctx.fill();
+  ctx.restore();
+  // $ symbol
+  ctx.fillStyle = '#b8860b';
+  ctx.font = 'bold 10px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText('$', x, y+4);
+}
+
+function drawPlayer(p) {
+  const x = Math.round(p.x - camera);
+  const y = Math.round(p.y);
+  if (p.dead || (p.invincible > 0 && Math.floor(p.invincible/4)%2)) return;
+
+  ctx.save();
+  if (p.dir === -1) {
+    ctx.translate(x + p.w/2, y);
+    ctx.scale(-1, 1);
+    ctx.translate(-p.w/2, 0);
+  } else {
+    ctx.translate(x, y);
+  }
+
+  // Body
+  ctx.fillStyle = C.player;
+  ctx.fillRect(2, 14, 24, 18);
+  // Overalls
+  ctx.fillStyle = C.playerO;
+  ctx.fillRect(2, 22, 24, 10);
+  // Buttons
+  ctx.fillStyle = '#ffd700';
+  ctx.fillRect(8, 24, 4, 4);
+  ctx.fillRect(16, 24, 4, 4);
+  // Head
+  ctx.fillStyle = C.playerH;
+  ctx.fillRect(4, 2, 20, 14);
+  // Hat
+  ctx.fillStyle = C.player;
+  ctx.fillRect(2, 0, 24, 6);
+  ctx.fillRect(0, 4, 28, 4);
+  // Eyes
+  ctx.fillStyle = '#000';
+  ctx.fillRect(8, 6, 4, 4);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(9, 7, 2, 2);
+  // Mustache
+  ctx.fillStyle = '#5a3000';
+  ctx.fillRect(7, 12, 6, 3);
+  ctx.fillRect(15, 12, 6, 3);
+  // Legs animation
+  const legOff = p.onGround ? [0, -4, 0, 4][p.animFrame] : 0;
+  ctx.fillStyle = C.playerO;
+  ctx.fillRect(4, 32, 8, 8 + (legOff > 0 ? legOff : 0));
+  ctx.fillRect(16, 32, 8, 8 + (legOff > 0 ? -legOff : 0));
+  // Shoes
+  ctx.fillStyle = '#3a1a00';
+  ctx.fillRect(2,  38 + (legOff > 0 ? legOff : 0), 12, 4);
+  ctx.fillRect(14, 38 + (legOff > 0 ? -legOff : 0), 12, 4);
+
+  ctx.restore();
+}
+
+function drawGoomba(e) {
+  if (!e.alive) return;
+  const x = Math.round(e.x - camera);
+  const y = Math.round(e.y);
+  const squish = e.squished;
+
+  ctx.save();
+  ctx.translate(x + e.w/2, y + e.h);
+  if (squish) ctx.scale(1.4, 0.35);
+  ctx.translate(-e.w/2, -e.h);
+
+  // Body
+  ctx.fillStyle = C.goomba;
+  ctx.beginPath();
+  ctx.ellipse(e.w/2, e.h*0.65, e.w/2, e.h*0.5, 0, 0, Math.PI*2);
+  ctx.fill();
+  // Head
+  ctx.fillStyle = '#c8a040';
+  ctx.beginPath();
+  ctx.ellipse(e.w/2, e.h*0.3, e.w/2-2, e.h*0.38, 0, 0, Math.PI*2);
+  ctx.fill();
+  if (!squish) {
+    // Eyes
+    ctx.fillStyle = C.goombaE;
+    ctx.fillRect(4, 6, 6, 5);
+    ctx.fillRect(e.w-10, 6, 6, 5);
+    ctx.fillStyle = '#f00';
+    ctx.fillRect(5, 7, 3, 3);
+    ctx.fillRect(e.w-9, 7, 3, 3);
+    // Eyebrows (angry)
+    ctx.fillStyle = '#3a1a00';
+    ctx.fillRect(3, 4, 8, 2);
+    ctx.fillRect(e.w-11, 4, 8, 2);
+    // Feet
+    const t = Date.now()/200;
+    ctx.fillStyle = '#5a3000';
+    ctx.fillRect(0 + Math.sin(t)*2, e.h-6, 10, 6);
+    ctx.fillRect(e.w-10 + Math.sin(t+Math.PI)*2, e.h-6, 10, 6);
+  }
+
+  ctx.restore();
+}
+
+function drawFlag() {
+  const x = flagX - camera;
+  // Pole
+  ctx.fillStyle = C.flagP;
+  ctx.fillRect(x-2, H-TILE-200, 4, 200);
+  // Flag
+  ctx.fillStyle = C.flagF;
+  ctx.fillRect(x+2, H-TILE-200, 28, 20);
+  // Base
+  ctx.fillStyle = '#888';
+  ctx.fillRect(x-8, H-TILE-4, 16, 4);
+}
+
+function drawParticles() {
+  for (const pt of particles) {
+    ctx.globalAlpha = pt.life / 30;
+    ctx.fillStyle = pt.color;
+    ctx.fillRect(pt.x - camera - 3, pt.y - 3, 6, 6);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawSky() {
+  const grad = ctx.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, '#1a6bcc');
+  grad.addColorStop(1, '#5cb8ff');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+}
+
+function draw() {
+  drawSky();
+
+  // Clouds (parallax)
+  for (const cl of clouds) {
+    drawCloud(cl.x - camera * 0.3, cl.y, cl.w);
+  }
+
+  // Platforms
+  for (const p of platforms) {
+    if (p.x - camera > W+32 || p.x+p.w - camera < -32) continue;
+    if (p.type === 'ground') drawGround(p);
+    else drawBrick(p);
+  }
+
+  drawFlag();
+
+  // Coins
+  for (const c of coins) {
+    if (!c.collected && c.x - camera > -20 && c.x - camera < W+20)
+      drawCoin(c);
+  }
+
+  // Enemies
+  for (const e of enemies) {
+    if (e.x - camera > -50 && e.x - camera < W+50)
+      drawGoomba(e);
+  }
+
+  drawPlayer(player);
+  drawParticles();
+
+  // Vignette
+  const vig = ctx.createRadialGradient(W/2, H/2, H*0.3, W/2, H/2, H*0.8);
+  vig.addColorStop(0, 'rgba(0,0,0,0)');
+  vig.addColorStop(1, 'rgba(0,0,0,0.35)');
+  ctx.fillStyle = vig;
+  ctx.fillRect(0, 0, W, H);
+}
+
+// ── OVERLAY ──────────────────────────────────────────────────────────────────
+function showOverlay(title, btn) {
+  overlayTitle.textContent = title;
+  overlayBtn.textContent = btn;
+  overlay.style.display = 'flex';
+}
+
+overlayBtn.addEventListener('click', () => {
+  overlay.style.display = 'none';
+  if (state === 'gameover') {
+    score = 0; lives = 3; level = 1;
+    scoreEl.textContent = 0;
+    livesEl.textContent = 3;
+    levelEl.textContent = 1;
+  } else if (state === 'win') {
+    score = 0; lives = 3; level = 1;
+    scoreEl.textContent = 0;
+    livesEl.textContent = 3;
+    levelEl.textContent = 1;
+  }
+  initLevel();
+  state = 'play';
+});
+
+// ── LOOP ─────────────────────────────────────────────────────────────────────
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+initLevel();
+loop();
+</script>
+</body>
+</html>
